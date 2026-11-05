@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#20352b">
+  <meta name="theme-color" content="#0b0b10">
   <meta name="description" content="JAY ARC — your personal command center for football, fitness, learning, creativity and savings.">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -15,7 +15,88 @@
   <title>JAY ARC — Life Command Center</title>
 </head>
 <body>
-<div class="app-shell">
+<main class="auth-screen" id="authScreen">
+  <section class="auth-card" aria-labelledby="authTitle">
+    <a class="brand auth-brand" href="#" aria-label="JAY ARC">
+      <span>JAY</span><b>/</b>ARC
+    </a>
+    <div class="auth-heading">
+      <span class="eyebrow">YOUR PERSONAL OPERATING SYSTEM</span>
+      <h1 id="authTitle">Welcome back.</h1>
+      <p id="authDescription">Sign in to continue building your arc.</p>
+    </div>
+    <p class="auth-message" id="authMessage" role="status" aria-live="polite" hidden></p>
+
+    <form class="auth-form" id="loginForm">
+      <label>Email address
+        <input id="loginEmail" type="email" autocomplete="email" required>
+      </label>
+      <label>Password
+        <span class="password-field">
+          <input id="loginPassword" type="password" autocomplete="current-password" required>
+          <button type="button" class="password-toggle" data-toggle-password="loginPassword" aria-label="Show password">Show</button>
+        </span>
+      </label>
+      <div class="auth-options">
+        <label class="remember-option"><input id="rememberMe" type="checkbox" checked> Remember me</label>
+        <button type="button" class="auth-link" data-auth-view="forgot">Forgot password?</button>
+      </div>
+      <button class="primary-button auth-submit" type="submit">Sign in <span aria-hidden="true">→</span></button>
+    </form>
+
+    <form class="auth-form" id="signupForm" hidden>
+      <label>Full name
+        <input id="signupName" type="text" autocomplete="name" maxlength="80" required>
+      </label>
+      <label>Username
+        <input id="signupUsername" type="text" autocomplete="username" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" aria-describedby="usernameHint" required>
+      </label>
+      <small id="usernameHint" class="field-hint">3–24 letters, numbers or underscores.</small>
+      <label>Email address
+        <input id="signupEmail" type="email" autocomplete="email" required>
+      </label>
+      <label>Password
+        <span class="password-field">
+          <input id="signupPassword" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="button" class="password-toggle" data-toggle-password="signupPassword" aria-label="Show password">Show</button>
+        </span>
+      </label>
+      <label>Confirm password
+        <input id="signupConfirmPassword" type="password" autocomplete="new-password" minlength="8" required>
+      </label>
+      <button class="primary-button auth-submit" type="submit">Create account <span aria-hidden="true">→</span></button>
+    </form>
+
+    <form class="auth-form" id="forgotForm" hidden>
+      <label>Email address
+        <input id="forgotEmail" type="email" autocomplete="email" required>
+      </label>
+      <button class="primary-button auth-submit" type="submit">Send reset link <span aria-hidden="true">→</span></button>
+    </form>
+
+    <form class="auth-form" id="resetForm" hidden>
+      <label>New password
+        <span class="password-field">
+          <input id="resetPassword" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="button" class="password-toggle" data-toggle-password="resetPassword" aria-label="Show password">Show</button>
+        </span>
+      </label>
+      <label>Confirm new password
+        <input id="resetConfirmPassword" type="password" autocomplete="new-password" minlength="8" required>
+      </label>
+      <button class="primary-button auth-submit" type="submit">Update password <span aria-hidden="true">→</span></button>
+    </form>
+
+    <div class="auth-switch" id="authSwitch">
+      <span>New to JAY ARC?</span>
+      <button type="button" class="auth-link" data-auth-view="signup">Create an account</button>
+    </div>
+    <button type="button" class="auth-link auth-back" id="authBack" data-auth-view="login" hidden>← Back to sign in</button>
+    <p class="auth-config-warning" id="authConfigWarning" hidden></p>
+  </section>
+</main>
+
+<div class="app-shell" id="appShell" hidden>
 
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="JAY ARC home">
@@ -24,10 +105,23 @@
 
     <div class="topbar-actions">
       <span class="sync-status" id="syncStatus">
-        <i></i> Saved locally
+        <i></i> Saving
       </span>
       <button class="icon-button" id="installButton" title="Install JAY ARC" hidden>⇩</button>
-      <button class="avatar" type="button" title="Your profile">JA</button>
+      <details class="profile-menu" id="profileMenu">
+        <summary class="profile-trigger" aria-label="Open profile menu">
+          <span class="avatar" id="profileAvatar">JA</span>
+          <span class="profile-trigger-name" id="profileName">Account</span>
+          <span aria-hidden="true">⌄</span>
+        </summary>
+        <div class="profile-dropdown">
+          <strong id="profileMenuName">Account</strong>
+          <small id="profileMenuUsername">@username</small>
+          <button type="button" id="openProfileSettings">Profile settings</button>
+          <button type="button" id="openAdminPanel" hidden>Admin dashboard</button>
+          <button type="button" id="signOutButton">Sign out</button>
+        </div>
+      </details>
     </div>
   </header>
 
@@ -87,7 +181,7 @@
           <article class="metric-card lime">
             <span>Today's completion</span>
             <strong id="completionValue">0%</strong>
-            <small><b id="completedCount">0</b> of 5 habits done</small>
+            <small><b id="completedCount">0</b> of <span id="activeHabitsCount">5</span> habits done</small>
           </article>
           <article class="metric-card">
             <span>Current week</span>
@@ -98,6 +192,11 @@
             <span>Arc savings</span>
             <strong>KES <b id="moneyValue">0</b></strong>
             <small>Target: KES 10,000</small>
+          </article>
+          <article class="metric-card">
+            <span>Young City season</span>
+            <strong><b id="teamMatchTotal">0</b> matches</strong>
+            <small><b id="teamGoalTotal">0</b> goals · <b id="teamAssistTotal">0</b> assists</small>
           </article>
         </section>
 
@@ -141,47 +240,109 @@
       <!-- FOOTBALL -->
       <section class="page-view" data-view="training" id="page-training" hidden>
         <div class="page-heading">
-          <span class="eyebrow">PERFORMANCE</span>
+          <span class="eyebrow">YOUNG CITY · TEAM FIRST</span>
           <h1>Football</h1>
-          <p>Become a more decisive, creative and complete winger.</p>
+          <p>Prioritize Young City training, match performance and recovery. Individual ball work stays out of daily targets until you have a football.</p>
         </div>
 
         <section class="content-section split-section" id="training">
           <div class="section-header">
-            <h2>Training log</h2>
-            <span class="section-note">Quality over quantity.</span>
+            <h2>Young City team log</h2>
+            <span class="section-note">Team training is the active priority.</span>
+          </div>
+
+          <div class="panel football-preference">
+            <label class="toggle-inline">
+              <input id="personalTrainingToggle" type="checkbox">
+              Individual training active
+            </label>
+            <p id="personalTrainingHelp">Disabled while you are without a football. Historical individual sessions remain saved.</p>
           </div>
 
           <div class="tool-grid">
             <form class="panel form-panel" id="footballForm">
               <div class="panel-title">
                 <span class="panel-icon football">⚽</span>
-                <div><h3>Log a session</h3><p>Record the work you put in.</p></div>
+                <div><h3>Log team activity</h3><p>Record Young City training, matches or recovery.</p></div>
               </div>
 
-              <label>Session type
+              <label>Activity
                 <select id="footballType">
-                  <option>Ball mastery</option>
-                  <option>Weak-foot practice</option>
-                  <option>Dribbling</option>
-                  <option>Finishing</option>
-                  <option>Crossing</option>
-                  <option>Speed &amp; agility</option>
-                  <option>Match play</option>
-                  <option>Strength &amp; conditioning</option>
+                  <option value="Team training" selected>Young City team training</option>
+                  <option value="Match">Match</option>
+                  <option value="Recovery / rest">Recovery / rest day</option>
+                  <optgroup id="individualTrainingOptions" label="Individual training" hidden>
+                    <option value="Ball mastery">Ball mastery</option>
+                    <option value="Weak-foot practice">Weak-foot practice</option>
+                    <option value="Dribbling">Dribbling</option>
+                    <option value="Finishing">Finishing</option>
+                    <option value="Crossing">Crossing</option>
+                    <option value="Speed &amp; agility">Speed &amp; agility</option>
+                    <option value="Strength &amp; conditioning">Strength &amp; conditioning</option>
+                  </optgroup>
                 </select>
               </label>
 
               <div class="field-row">
+                <label>Date
+                  <input id="footballDate" type="date" required>
+                </label>
+                <label>Start time
+                  <input id="footballTime" type="time">
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>Team
+                  <input id="footballTeam" type="text" maxlength="80" value="Young City">
+                </label>
                 <label>Minutes
                   <input id="footballMinutes" type="number" min="1" max="600" value="45" required>
                 </label>
+              </div>
+
+              <div class="field-row">
                 <label>Intensity
                   <select id="footballIntensity">
                     <option>Easy</option>
                     <option selected>Solid</option>
                     <option>Hard</option>
                   </select>
+                </label>
+                <label>Attendance
+                  <select id="teamAttendanceStatus">
+                    <option value="attended">Attended</option>
+                    <option value="late">Late</option>
+                    <option value="excused">Excused</option>
+                    <option value="absent">Absent</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>Attendance % (optional)
+                  <input id="teamAttendance" type="number" min="0" max="100" value="0">
+                </label>
+                <label>Match appearances
+                  <input id="teamMatches" type="number" min="0" max="60" value="0">
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>Goals
+                  <input id="teamGoals" type="number" min="0" max="50" value="0">
+                </label>
+                <label>Assists
+                  <input id="teamAssists" type="number" min="0" max="50" value="0">
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>Performance /10
+                  <input id="teamPerformance" type="number" min="0" max="10" step="0.1" value="7.5">
+                </label>
+                <label>Match result
+                  <input id="teamMatchResult" type="text" maxlength="30" placeholder="e.g. 2-1">
                 </label>
               </div>
 
@@ -200,6 +361,19 @@
               <div class="history-list" id="footballHistory"></div>
             </div>
           </div>
+
+          <section class="panel schedule-panel">
+            <div class="panel-title">
+              <div><h3>Training schedule</h3><p>Plan upcoming Young City sessions.</p></div>
+            </div>
+            <form class="inline-add-form" id="footballScheduleForm">
+              <input id="scheduleDate" type="date" required aria-label="Training date">
+              <input id="scheduleTime" type="time" aria-label="Training time">
+              <input id="scheduleNote" type="text" maxlength="120" placeholder="Location or note">
+              <button class="primary-button" type="submit">Add schedule</button>
+            </form>
+            <div class="history-list" id="footballScheduleList"></div>
+          </section>
         </section>
       </section>
 
@@ -382,7 +556,7 @@
               <textarea id="journalText" placeholder="What went well? What did you learn? What will you do differently tomorrow?"></textarea>
               <div class="journal-footer">
                 <span id="journalStatus">Not saved yet</span>
-                <button class="primary-button" id="saveJournal" type="button">Save entry</button>
+                  <span class="section-note">Autosaves while you type</span>
               </div>
             </div>
           </div>
@@ -403,37 +577,65 @@
         </div>
 
         <section class="content-section">
+          <section class="metrics-row protection-metrics" aria-label="Data protection status">
+            <article class="metric-card lime">
+              <span>Backup health</span>
+              <strong id="backupHealth">Checking…</strong>
+              <small id="storageStatus">Checking storage</small>
+            </article>
+            <article class="metric-card">
+              <span>Last backup</span>
+              <strong id="lastBackup">Not yet</strong>
+              <small id="backupCount">0 of 30 snapshots</small>
+            </article>
+            <article class="metric-card">
+              <span>Records protected</span>
+              <strong id="totalRecords">0</strong>
+              <small id="storageUsage">Storage usage checking…</small>
+            </article>
+          </section>
+
           <div class="tool-grid">
             <div class="panel">
               <div class="panel-title">
                 <span class="panel-icon learning">↓</span>
-                <div><h3>Export your data</h3><p>Download a backup of your JAY ARC records.</p></div>
+                <div><h3>Backup and export</h3><p>Download a checksum-verified copy of all JAY ARC data.</p></div>
               </div>
-              <button class="primary-button" id="exportBackup" type="button">Export backup</button>
+              <div class="field-row backup-actions">
+                <button class="primary-button" id="createBackup" type="button">Create backup now</button>
+                <button class="secondary-button" id="exportBackup" type="button">Download full JSON</button>
+              </div>
             </div>
 
             <div class="panel">
               <div class="panel-title">
                 <span class="panel-icon strength">↑</span>
-                <div><h3>Restore your data</h3><p>Restore records from a backup file.</p></div>
+                <div><h3>Import and restore</h3><p>Validate a backup before reviewing and restoring it.</p></div>
               </div>
               <label for="importBackup">Choose a backup file (.json)</label>
               <input id="importBackup" type="file" accept=".json,application/json">
-              <button class="secondary-button" id="restoreBackup" type="button">Restore backup</button>
+              <button class="secondary-button" id="restoreBackup" type="button">Review &amp; restore backup</button>
+            </div>
+
+            <div class="panel backup-history-panel">
+              <div class="panel-title">
+                <div><h3>Automatic backup history</h3><p>Up to 30 versioned recovery snapshots.</p></div>
+              </div>
+              <div class="history-list" id="backupHistory"></div>
             </div>
           </div>
 
           <div class="panel" style="margin-top:20px">
-            <h3>Before you restore</h3>
-            <p>Restoring may replace the records currently stored in this browser. Export a fresh backup first and only import a file you trust.</p>
-            <p id="backupStatus" role="status" aria-live="polite">Backup tools will be connected in the next step.</p>
+            <h3>Private cloud storage</h3>
+            <p>Your progress is saved to your authenticated Supabase account. Row Level Security restricts private records to their owner. Recovery snapshots on this device are stored separately for each account.</p>
+            <p id="backupStatus" role="status" aria-live="polite">Backup status is loading.</p>
           </div>
         </section>
       </section>
 
       <footer>
         <span>JAY ARC · Build your arc, one day at a time.</span>
-        <button class="text-button" id="clearAll" type="button">Clear all local data</button>
+        <button class="text-button" id="clearAll" type="button">Clear my account data</button>
       </footer>
 
     </main>
@@ -442,6 +644,58 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<dialog class="app-dialog" id="migrationDialog" aria-labelledby="migrationTitle">
+  <form method="dialog" class="dialog-card">
+    <button class="dialog-close" type="button" data-close-dialog="migrationDialog" aria-label="Close">×</button>
+    <span class="eyebrow">EXISTING RECORDS FOUND</span>
+    <h2 id="migrationTitle">Bring your progress with you?</h2>
+    <p id="migrationDescription">We found personal records saved in this browser. Review and confirm before transferring them to your account.</p>
+    <div class="dialog-actions">
+      <button class="secondary-button" id="skipMigration" type="button">Not now</button>
+      <button class="secondary-button" id="exportMigration" type="button" hidden>Download local records</button>
+      <button class="primary-button" id="confirmMigration" type="button">Import to my account</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="app-dialog" id="profileDialog" aria-labelledby="profileDialogTitle">
+  <form class="dialog-card auth-form" id="profileForm">
+    <button class="dialog-close" type="button" data-close-dialog="profileDialog" aria-label="Close">×</button>
+    <span class="eyebrow">ACCOUNT</span>
+    <h2 id="profileDialogTitle">Profile settings</h2>
+    <label>Full name
+      <input id="profileFullName" type="text" maxlength="80" required>
+    </label>
+    <label>Username
+      <input id="profileUsername" type="text" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" required>
+    </label>
+    <label>Email address
+      <input id="profileEmail" type="email" readonly>
+    </label>
+    <label>New password <span class="field-hint">Leave blank to keep your current password.</span>
+      <input id="profileNewPassword" type="password" autocomplete="new-password" minlength="8">
+    </label>
+    <label>Confirm new password
+      <input id="profileConfirmPassword" type="password" autocomplete="new-password" minlength="8">
+    </label>
+    <button class="primary-button auth-submit" type="submit">Save profile <span aria-hidden="true">→</span></button>
+  </form>
+</dialog>
+
+<dialog class="app-dialog admin-dialog" id="adminDialog" aria-labelledby="adminTitle">
+  <div class="dialog-card">
+    <button class="dialog-close" type="button" data-close-dialog="adminDialog" aria-label="Close">×</button>
+    <span class="eyebrow">ADMINISTRATION</span>
+    <h2 id="adminTitle">Account overview</h2>
+    <p id="adminSummary" role="status">Loading account statistics…</p>
+    <div class="admin-user-list" id="adminUserList"></div>
+  </div>
+</dialog>
+
+<script src="supabase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="data-store.js"></script>
+<script src="auth.js"></script>
 <script src="script.js"></script>
 <script src="quotes.js"></script>
 </body>

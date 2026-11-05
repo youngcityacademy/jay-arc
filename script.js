@@ -3,20 +3,24 @@
 
 /* =========================================================
    JAY ARC 2.0 — APPLICATION CORE
-   Storage key intentionally retained for existing records.
 ========================================================= */
 
-const STORAGE_KEY = "jayArcAppState";
-const BACKUP_VERSION = 1;
+const BACKUP_VERSION = 2;
 const SAVINGS_TARGET = 10000;
 
 const HABITS = [
-  { id: "football", label: "Football or movement", icon: "⚽" },
+  { id: "football", label: "Young City team training", icon: "⚽" },
   { id: "learning", label: "Learn something useful", icon: "⌘" },
   { id: "fitness", label: "Strength or recovery", icon: "✦" },
   { id: "focus", label: "Focused work", icon: "◈" },
   { id: "reflection", label: "Reflect on the day", icon: "✎" }
 ];
+
+const PERSONAL_FOOTBALL_HABIT = {
+  id: "personalFootball",
+  label: "Individual ball training",
+  icon: "⚽"
+};
 
 const EXERCISES = [
   { id: "pushups", label: "Push-ups", sets: 3 },
@@ -29,13 +33,20 @@ const DEFAULT_STATE = {
   days: {},
   savings: [],
   learningGoals: [],
-  videoIdeas: []
+  videoIdeas: [],
+  footballSchedule: [],
+  footballPersonalTrainingEnabled: false,
+  footballPersonalTrainingPeriods: []
 };
 
-let state = loadState();
+let state = structuredClone(DEFAULT_STATE);
 let installPrompt = null;
 let saveTimer = null;
 let saveError = false;
+let dataDatabase = null;
+let persistenceMode = "starting";
+let persistenceQueue = Promise.resolve();
+let saveRevision = 0;
 
 function $(id) {
   return document.getElementById(id);
@@ -67,36 +78,57 @@ function number(value, fallback = 0) {
   return Number.isFinite(result) ? result : fallback;
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_STATE);
-
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("The saved data is not a valid object.");
-    }
-
-    // Preserve existing fields, including fields this version doesn't use.
-    return {
-      ...structuredClone(DEFAULT_STATE),
-      ...parsed,
-      days: parsed.days && typeof parsed.days === "object"
-        ? parsed.days
-        : {},
-      savings: Array.isArray(parsed.savings) ? parsed.savings : [],
-      learningGoals: Array.isArray(parsed.learningGoals)
-        ? parsed.learningGoals
-        : [],
-      videoIdeas: Array.isArray(parsed.videoIdeas)
-        ? parsed.videoIdeas
-        : []
-    };
-  } catch (error) {
-    console.error("JAY ARC could not read saved data:", error);
-    showStatus("Saved data could not be read. Export or recover a backup before making changes.", true);
-    return structuredClone(DEFAULT_STATE);
+function normalizeState(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("The saved data is not a valid object.");
   }
+  if (parsed.days !== undefined &&
+      (!parsed.days || typeof parsed.days !== "object" || Array.isArray(parsed.days))) {
+    throw new Error("Daily records are malformed; saved data was not changed.");
+  }
+  for (const [date, day] of Object.entries(parsed.days || {})) {
+    if (!day || typeof day !== "object" || Array.isArray(day)) {
+      throw new Error(`Daily record ${date} is malformed; saved data was not changed.`);
+    }
+  }
+  if (parsed.savings !== undefined &&
+      !Array.isArray(parsed.savings) &&
+      !(Number.isFinite(Number(parsed.savings)) && Number(parsed.savings) >= 0)) {
+    throw new Error("Savings data is malformed; saved data was not changed.");
+  }
+  for (const key of ["learningGoals", "videoIdeas", "footballSchedule"]) {
+    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+      throw new Error(`${key} data is malformed; saved data was not changed.`);
+    }
+    if (parsed.footballPersonalTrainingPeriods !== undefined &&
+        !Array.isArray(parsed.footballPersonalTrainingPeriods)) {
+      throw new Error("Individual training history is malformed; saved data was not changed.");
+    }
+  }
+
+  const savings = Array.isArray(parsed.savings)
+    ? parsed.savings
+    : Number.isFinite(Number(parsed.savings)) && Number(parsed.savings) > 0
+      ? [{ amount: Number(parsed.savings), note: "Legacy balance" }]
+      : [];
+
+  return {
+    ...structuredClone(DEFAULT_STATE),
+    ...parsed,
+    days: parsed.days && typeof parsed.days === "object" && !Array.isArray(parsed.days)
+      ? parsed.days
+      : {},
+    savings,
+    learningGoals: Array.isArray(parsed.learningGoals) ? parsed.learningGoals : [],
+    videoIdeas: Array.isArray(parsed.videoIdeas) ? parsed.videoIdeas : [],
+    footballSchedule: Array.isArray(parsed.footballSchedule) ? parsed.footballSchedule : [],
+    footballPersonalTrainingEnabled: Boolean(parsed.footballPersonalTrainingEnabled),
+    footballPersonalTrainingPeriods: Array.isArray(parsed.footballPersonalTrainingPeriods)
+      ? parsed.footballPersonalTrainingPeriods
+      : parsed.footballPersonalTrainingEnabled
+        ? [{ startDate: todayKey(), endDate: null }]
+        : []
+  };
 }
 
 function getDay(key = todayKey()) {
@@ -119,27 +151,50 @@ function getDay(key = todayKey()) {
   return day;
 }
 
-function saveState() {
+async function saveState() {
+  if (persistenceMode === "starting") {
+    showStatus("Data storage is not ready yet. Your change has not been saved.", true);
+    return false;
+  }
+
+  const revision = ++saveRevision;
+  const snapshot = structuredClone(state);
+  updateSyncStatus("Saving");
+  const task = persistenceQueue.then(() => JayArcAuth.saveData(snapshot));
+  persistenceQueue = task.then(() => undefined, () => undefined);
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    await task;
+    if (revision !== saveRevision) return true;
     saveError = false;
-    updateSyncStatus("Saved locally");
+    updateSyncStatus("Saved");
+    if ($("journalStatus") && $("journalText") && document.activeElement === $("journalText")) {
+      $("journalStatus").textContent = "Entry autosaved";
+    }
+    renderDataProtection();
     return true;
   } catch (error) {
-    saveError = true;
-    console.error("JAY ARC could not save:", error);
-    updateSyncStatus("Save failed");
-    showStatus("Your changes may not be saved. Export a backup or free browser storage space.", true);
+    handleSaveFailure(error);
     return false;
   }
 }
 
+function handleSaveFailure(error) {
+  saveError = true;
+  console.error("JAY ARC primary save failed:", error);
+  updateSyncStatus("Save failed");
+  showStatus(error.message || "Cloud save failed. Your previous cloud records were not overwritten.", true);
+  if ($("journalStatus") && $("journalText")) {
+    $("journalStatus").textContent = "Save failed";
+  }
+  renderDataProtection();
+}
+
 function scheduleSave() {
   clearTimeout(saveTimer);
-  updateSyncStatus("Saving…");
+  updateSyncStatus("Saving");
   saveTimer = setTimeout(() => {
-    saveState();
-  }, 200);
+    void saveState();
+  }, 500);
 }
 
 function updateSyncStatus(message) {
@@ -290,8 +345,9 @@ function renderHabits() {
   if (!container) return;
 
   const day = getDay();
-  container.innerHTML = HABITS.map(habit => {
-    const checked = isHabitComplete(day.habits[habit.id]);
+  const habits = activeHabits();
+  container.innerHTML = habits.map(habit => {
+    const checked = isHabitCompleteForDay(day, habit);
 
     return `
       <label class="habit-item ${checked ? "completed" : ""}">
@@ -305,16 +361,45 @@ function renderHabits() {
   container.querySelectorAll("[data-habit]").forEach(input => {
     input.addEventListener("change", () => {
       getDay().habits[input.dataset.habit] = input.checked;
+      const item = input.closest(".habit-item");
+      item?.classList.toggle("completed", input.checked);
+      const checkmark = item?.querySelector(".habit-check");
+      if (checkmark) checkmark.textContent = input.checked ? "✓" : "";
       scheduleSave();
       renderOverview();
-      renderHabits();
     });
   });
 }
 
-function habitCountForDay(day) {
-  const habits = day?.habits || {};
-  return HABITS.filter(habit => isHabitComplete(habits[habit.id])).length;
+function activeHabits(date = todayKey()) {
+  const enabled = state.footballPersonalTrainingPeriods.some(period =>
+    typeof period?.startDate === "string" &&
+    period.startDate <= date &&
+    (!period.endDate || date < period.endDate)
+  );
+  return enabled ? [...HABITS, PERSONAL_FOOTBALL_HABIT] : HABITS;
+}
+
+function habitCountForDay(day, date = todayKey()) {
+  return activeHabits(date).filter(habit => isHabitCompleteForDay(day, habit)).length;
+}
+
+function isHabitCompleteForDay(day, habit) {
+  const manuallyCompleted = isHabitComplete(day?.habits?.[habit.id]);
+  if (manuallyCompleted) return true;
+  const sessions = Array.isArray(day?.footballSessions) ? day.footballSessions : [];
+  if (habit.id === "football") {
+    return sessions.some(session =>
+      ["team training", "match"].includes(String(session.type || "").toLowerCase()) &&
+      ["attended", "late"].includes(String(session.attendanceStatus || "attended").toLowerCase())
+    );
+  }
+  if (habit.id === PERSONAL_FOOTBALL_HABIT.id) {
+    return sessions.some(session =>
+      /ball mastery|weak-foot|dribbl|finishing|crossing|speed|individual/i.test(session.type || "")
+    );
+  }
+  return false;
 }
 
 function activeDates() {
@@ -322,7 +407,7 @@ function activeDates() {
     const day = state.days[key];
     if (!day || typeof day !== "object") return false;
 
-    return habitCountForDay(day) > 0 ||
+    return habitCountForDay(day, key) > 0 ||
       (Array.isArray(day.footballSessions) && day.footballSessions.length > 0) ||
       Boolean(day.workout?.saved) ||
       Boolean(day.journal);
@@ -348,11 +433,13 @@ function calculateStreak() {
 function renderOverview() {
   const day = getDay();
   const completed = habitCountForDay(day);
-  const percentage = Math.round((completed / HABITS.length) * 100);
+  const habitTotal = activeHabits(todayKey()).length;
+  const percentage = Math.round((completed / habitTotal) * 100);
   const totalSaved = getSavingsTotal();
 
   if ($("completionValue")) $("completionValue").textContent = `${percentage}%`;
   if ($("completedCount")) $("completedCount").textContent = completed;
+  if ($("activeHabitsCount")) $("activeHabitsCount").textContent = habitTotal;
   if ($("sidebarGoal")) $("sidebarGoal").textContent = `${percentage}%`;
   if ($("sidebarGoalBar")) $("sidebarGoalBar").style.width = `${percentage}%`;
   if ($("moneyValue")) $("moneyValue").textContent = money(totalSaved);
@@ -372,11 +459,11 @@ function renderOverview() {
     keys.push(todayKey(date));
   }
 
-  const weeklyCounts = keys.map(key => habitCountForDay(state.days[key] || {}));
+  const weeklyCounts = keys.map(key => habitCountForDay(state.days[key] || {}, key));
   const active = weeklyCounts.filter(count => count > 0).length;
   const weeklyAverage = Math.round(
     weeklyCounts.reduce((sum, count) => sum + count, 0) /
-    (keys.length * HABITS.length) * 100
+    keys.reduce((sum, key) => sum + activeHabits(key).length, 0) * 100
   );
 
   if ($("weekCompletion")) $("weekCompletion").textContent = `${weeklyAverage}%`;
@@ -412,57 +499,245 @@ function renderFootball() {
   if (!history) return;
 
   const sessions = getSessions();
+  const teamSessions = sessions.filter(session =>
+    !session.type || !/ball mastery|weak-foot|dribbl|finishing|crossing|speed|individual/i.test(session.type)
+  );
   const totalMinutes = sessions.reduce(
     (sum, session) => sum + number(session.minutes), 0
   );
+  const matches = teamSessions.reduce((sum, session) =>
+    sum + (number(session.matches) || (/^match$/i.test(session.type || "") ? 1 : 0)), 0
+  );
+  const goals = teamSessions.reduce((sum, session) => sum + number(session.goals), 0);
+  const assists = teamSessions.reduce((sum, session) => sum + number(session.assists), 0);
 
   if ($("footballMinutesTotal")) {
     $("footballMinutesTotal").textContent = `${totalMinutes} min`;
   }
+  if ($("teamMatchTotal")) $("teamMatchTotal").textContent = matches;
+  if ($("teamGoalTotal")) $("teamGoalTotal").textContent = goals;
+  if ($("teamAssistTotal")) $("teamAssistTotal").textContent = assists;
   if ($("footballSummary")) {
+    const latest = teamSessions[0];
+    const extras = latest ? [
+      latest.attendanceStatus ? latest.attendanceStatus : null,
+      latest.attendance !== undefined && latest.attendance !== null
+        ? `${number(latest.attendance)}% attendance`
+        : null,
+      latest.matches !== undefined ? `${number(latest.matches)} appearances` : null,
+      latest.goals !== undefined ? `${number(latest.goals)} goals` : null,
+      latest.assists !== undefined ? `${number(latest.assists)} assists` : null,
+      latest.performance !== undefined ? `perf ${number(latest.performance)}/10` : null
+    ].filter(Boolean).slice(0, 3).join(" • ") : "";
+
     $("footballSummary").textContent = sessions.length
-      ? `${sessions.length} session${sessions.length === 1 ? "" : "s"} logged`
+      ? extras
+        ? `${sessions.length} session${sessions.length === 1 ? "" : "s"} logged • ${extras}`
+        : `${sessions.length} session${sessions.length === 1 ? "" : "s"} logged`
       : "No sessions yet";
   }
 
   history.innerHTML = sessions.length
-    ? sessions.slice(0, 12).map(session => `
+    ? sessions.slice(0, 12).map(session => {
+        const stats = [
+          session.team ? escapeHTML(session.team) : null,
+          session.attendanceStatus ? `Attendance: ${session.attendanceStatus}` : null,
+          session.attendance !== undefined && session.attendance !== null
+            ? `Att. ${number(session.attendance)}%`
+            : null,
+          session.matches !== undefined ? `${number(session.matches)} appearances` : null,
+          session.goals !== undefined ? `G.${number(session.goals)}` : null,
+          session.assists !== undefined ? `A.${number(session.assists)}` : null,
+          session.performance !== undefined ? `Perf. ${number(session.performance)}/10` : null,
+          session.matchResult ? `Result: ${session.matchResult}` : null
+        ].filter(Boolean).join(" • ");
+
+        return `
         <article class="history-item">
           <div>
             <strong>${escapeHTML(session.type || "Football session")}</strong>
-            <small>${escapeHTML(dateLabel(session.date))} · ${escapeHTML(session.intensity || "Solid")}</small>
+            <small>${escapeHTML(dateLabel(session.date))}${session.time ? ` · ${escapeHTML(session.time)}` : ""} · ${escapeHTML(session.intensity || "Solid")}</small>
+            ${stats ? `<p>${escapeHTML(stats)}</p>` : ""}
             ${session.notes ? `<p>${escapeHTML(session.notes)}</p>` : ""}
           </div>
           <span class="stat-badge">${number(session.minutes)} min</span>
-        </article>`).join("")
+        </article>`;
+      }).join("")
     : '<p class="empty-state">Your first session starts here.</p>';
+
+  renderFootballSchedule();
+}
+
+function renderFootballSchedule() {
+  const container = $("footballScheduleList");
+  if (!container) return;
+  const schedule = state.footballSchedule.slice().sort((left, right) =>
+    `${left.date} ${left.time || ""}`.localeCompare(`${right.date} ${right.time || ""}`)
+  );
+  const upcoming = schedule.filter(item => item.date >= todayKey());
+  container.innerHTML = upcoming.length
+    ? upcoming.map(item => `
+        <article class="history-item">
+          <div>
+            <strong>Young City team training</strong>
+            <small>${escapeHTML(dateLabel(item.date))}${item.time ? ` · ${escapeHTML(item.time)}` : ""}</small>
+            ${item.note ? `<p>${escapeHTML(item.note)}</p>` : ""}
+          </div>
+          <button class="text-button" type="button" data-delete-schedule="${escapeHTML(item.id)}" aria-label="Remove scheduled training">Remove</button>
+        </article>`).join("")
+    : '<p class="empty-state">No upcoming team sessions scheduled.</p>';
+
+  container.querySelectorAll("[data-delete-schedule]").forEach(button => {
+    button.addEventListener("click", async () => {
+      state.footballSchedule = state.footballSchedule.filter(item =>
+        item.id !== button.dataset.deleteSchedule
+      );
+      renderFootballSchedule();
+      await saveState();
+    });
+  });
 }
 
 function initFootball() {
-  $("footballForm")?.addEventListener("submit", event => {
+  const personalToggle = $("personalTrainingToggle");
+  const personalOptions = $("individualTrainingOptions");
+  if (personalToggle) {
+    personalToggle.checked = state.footballPersonalTrainingEnabled;
+    if (personalOptions) personalOptions.hidden = !personalToggle.checked;
+    personalToggle.addEventListener("change", async () => {
+      state.footballPersonalTrainingEnabled = personalToggle.checked;
+      const currentPeriod = state.footballPersonalTrainingPeriods.find(period => !period.endDate);
+      if (personalToggle.checked && !currentPeriod) {
+        state.footballPersonalTrainingPeriods.push({ startDate: todayKey(), endDate: null });
+      } else if (!personalToggle.checked && currentPeriod) {
+        if (currentPeriod.startDate >= todayKey()) {
+          state.footballPersonalTrainingPeriods = state.footballPersonalTrainingPeriods.filter(period => period !== currentPeriod);
+        } else {
+          currentPeriod.endDate = todayKey();
+        }
+      }
+      if (personalOptions) personalOptions.hidden = !personalToggle.checked;
+      if (!personalToggle.checked &&
+          $("footballType")?.selectedOptions[0]?.parentElement?.id === "individualTrainingOptions") {
+        $("footballType").value = "Team training";
+      }
+      renderHabits();
+      renderOverview();
+      if ($("personalTrainingHelp")) {
+        $("personalTrainingHelp").textContent = personalToggle.checked
+          ? "Individual training is active and counts as a daily habit again."
+          : "Disabled while you are without a football. Historical individual sessions remain saved.";
+      }
+      await saveState();
+    });
+  }
+
+  const activitySelect = $("footballType");
+  activitySelect?.addEventListener("change", () => {
+    const isRestDay = activitySelect.value === "Recovery / rest";
+    const minutes = $("footballMinutes");
+    if (minutes) {
+      minutes.min = isRestDay ? "0" : "1";
+      if (isRestDay) minutes.value = "0";
+      else if (number(minutes.value) < 1) minutes.value = "45";
+    }
+  });
+
+  if ($("footballDate")) $("footballDate").value = todayKey();
+  if ($("scheduleDate")) $("scheduleDate").value = todayKey();
+
+  $("footballForm")?.addEventListener("submit", async event => {
     event.preventDefault();
 
     const minutes = number($("footballMinutes")?.value);
-    if (minutes < 1 || minutes > 600) {
-      showStatus("Enter session minutes between 1 and 600.", true);
+    const activity = $("footballType")?.value || "Team training";
+    const isRestDay = activity === "Recovery / rest";
+    const date = $("footballDate")?.value || todayKey();
+    if ((!isRestDay && (minutes < 1 || minutes > 600)) ||
+        (isRestDay && (minutes < 0 || minutes > 600))) {
+      showStatus(isRestDay
+        ? "Recovery minutes must be between 0 and 600."
+        : "Enter session minutes between 1 and 600.", true);
       return;
     }
 
-    getDay().footballSessions.push({
+    const personalType = /ball mastery|weak-foot|dribbl|finishing|crossing|speed|individual/i.test(activity);
+    if (personalType && !state.footballPersonalTrainingEnabled) {
+      showStatus("Enable individual training first when you have a football.", true);
+      return;
+    }
+
+    const session = {
       id: makeId(),
-      date: todayKey(),
-      type: $("footballType")?.value || "Football",
+      date,
+      time: $("footballTime")?.value || "",
+      team: $("footballTeam")?.value.trim() || "Young City",
+      type: activity,
       minutes,
       intensity: $("footballIntensity")?.value || "Solid",
-      notes: $("footballNotes")?.value.trim() || ""
-    });
-
-    if (!saveState()) return;
-
-    $("footballNotes").value = "";
+      notes: $("footballNotes")?.value.trim() || "",
+      attendanceStatus: isRestDay ? "recovery/rest" : $("teamAttendanceStatus")?.value || "attended",
+      attendance: $("teamAttendance")?.value === "" ? null : number($("teamAttendance")?.value),
+      matches: number($("teamMatches")?.value),
+      goals: number($("teamGoals")?.value),
+      assists: number($("teamAssists")?.value),
+      performance: number($("teamPerformance")?.value),
+      matchResult: $("teamMatchResult")?.value.trim() || ""
+    };
+    const day = getDay(date);
+    day.footballSessions.push(session);
+    if (!isRestDay && ["attended", "late"].includes(session.attendanceStatus)) {
+      if (personalType) day.habits.personalFootball = true;
+      else if (["Team training", "Match"].includes(activity)) day.habits.football = true;
+    }
     renderFootball();
     renderOverview();
-    showStatus("Football session saved.");
+    if (!await saveState()) return;
+
+    $("footballNotes").value = "";
+    $("teamAttendance").value = "";
+    $("teamAttendanceStatus").value = "attended";
+    $("teamMatches").value = "0";
+    $("teamGoals").value = "0";
+    $("teamAssists").value = "0";
+    $("teamPerformance").value = "7.5";
+    $("teamMatchResult").value = "";
+    $("footballDate").value = todayKey();
+    $("footballTime").value = "";
+    renderFootball();
+    renderOverview();
+    showStatus(isRestDay ? "Recovery / rest day saved." : "Football activity saved.");
+  });
+
+  $("footballScheduleForm")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const date = $("scheduleDate")?.value;
+    if (!date) {
+      showStatus("Choose a training date.", true);
+      return;
+    }
+
+    const item = {
+      id: makeId(),
+      team: "Young City",
+      date,
+      time: $("scheduleTime")?.value || "",
+      note: $("scheduleNote")?.value.trim() || "",
+      createdAt: new Date().toISOString()
+    };
+    if (state.footballSchedule.some(session =>
+      session.date === item.date && (session.time || "") === item.time
+    )) {
+      showStatus("A Young City session is already scheduled for that date and time.", true);
+      return;
+    }
+    state.footballSchedule.push(item);
+    renderFootballSchedule();
+    if (!await saveState()) return;
+    $("scheduleNote").value = "";
+    $("scheduleTime").value = "";
+    renderFootballSchedule();
+    showStatus("Young City training scheduled.");
   });
 }
 
@@ -492,9 +767,13 @@ function renderWorkout() {
 
   container.querySelectorAll("[data-exercise]").forEach(input => {
     input.addEventListener("change", () => {
-      getDay().workout.exercises[input.dataset.exercise] = input.checked;
+      const workout = getDay().workout;
+      workout.exercises[input.dataset.exercise] = input.checked;
+      workout.saved = true;
+      workout.date = todayKey();
+      workout.sets = getWorkoutSets(getDay());
+      input.closest(".exercise-item")?.classList.toggle("completed", input.checked);
       scheduleSave();
-      renderWorkout();
       renderVolume();
     });
   });
@@ -528,13 +807,13 @@ function renderVolume() {
 }
 
 function initWorkout() {
-  $("saveWorkout")?.addEventListener("click", () => {
+  $("saveWorkout")?.addEventListener("click", async () => {
     const workout = getDay().workout;
     workout.saved = true;
     workout.date = todayKey();
     workout.sets = getWorkoutSets(getDay());
 
-    if (saveState()) {
+    if (await saveState()) {
       renderOverview();
       showStatus("Workout saved.");
     }
@@ -575,7 +854,7 @@ function renderLearning() {
     : '<p class="empty-state">Add one useful skill to work on.</p>';
 
   container.querySelectorAll("[data-goal-index]").forEach(input => {
-    input.addEventListener("change", () => {
+    input.addEventListener("change", async () => {
       const index = Number(input.dataset.goalIndex);
       const goal = state.learningGoals[index];
 
@@ -589,24 +868,23 @@ function renderLearning() {
         };
       }
 
-      saveState();
+      await saveState();
       renderLearning();
     });
   });
 
   container.querySelectorAll("[data-delete-goal]").forEach(button => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const index = Number(button.dataset.deleteGoal);
       state.learningGoals.splice(index, 1);
-      saveState();
+      await saveState();
       renderLearning();
-      showStatus("Learning goal removed.");
     });
   });
 }
 
 function initLearning() {
-  $("learningTaskForm")?.addEventListener("submit", event => {
+  $("learningTaskForm")?.addEventListener("submit", async event => {
     event.preventDefault();
 
     const input = $("learningTaskInput");
@@ -614,7 +892,7 @@ function initLearning() {
     if (!text) return;
 
     state.learningGoals.push({ id: makeId(), text, done: false });
-    if (!saveState()) return;
+    if (!await saveState()) return;
 
     input.value = "";
     renderLearning();
@@ -653,17 +931,16 @@ function renderVideoIdeas() {
     : '<p class="empty-state">Your next great idea goes here.</p>';
 
   container.querySelectorAll("[data-delete-idea]").forEach(button => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       state.videoIdeas.splice(Number(button.dataset.deleteIdea), 1);
-      saveState();
+      await saveState();
       renderVideoIdeas();
-      showStatus("Video idea removed.");
     });
   });
 }
 
 function initVideoIdeas() {
-  $("videoIdeaForm")?.addEventListener("submit", event => {
+  $("videoIdeaForm")?.addEventListener("submit", async event => {
     event.preventDefault();
 
     const input = $("videoIdeaInput");
@@ -677,7 +954,7 @@ function initVideoIdeas() {
       createdAt: new Date().toISOString()
     });
 
-    if (!saveState()) return;
+    if (!await saveState()) return;
 
     input.value = "";
     renderVideoIdeas();
@@ -730,7 +1007,7 @@ function renderSavings() {
 }
 
 function initSavings() {
-  $("savingsForm")?.addEventListener("submit", event => {
+  $("savingsForm")?.addEventListener("submit", async event => {
     event.preventDefault();
 
     const amount = number($("savingsAmount")?.value);
@@ -748,7 +1025,7 @@ function initSavings() {
       date: todayKey()
     });
 
-    if (!saveState()) return;
+    if (!await saveState()) return;
 
     $("savingsAmount").value = "";
     $("savingsNote").value = "";
@@ -772,7 +1049,7 @@ function renderJournal() {
 
   if ($("journalStatus")) {
     $("journalStatus").textContent = day.journal
-      ? "Entry saved locally"
+      ? "Entry autosaved"
       : "No entry saved yet";
   }
 
@@ -780,18 +1057,6 @@ function renderJournal() {
 }
 
 function initJournal() {
-  $("saveJournal")?.addEventListener("click", () => {
-    getDay().journal = $("journalText")?.value || "";
-
-    if (saveState()) {
-      renderJournal();
-      renderHabits();
-      renderOverview();
-      showStatus("Journal entry saved.");
-    }
-  });
-
-  // Autosave a draft while typing, without waiting for the Save button.
   $("journalText")?.addEventListener("input", () => {
     getDay().journal = $("journalText").value;
     if ($("journalStatus")) $("journalStatus").textContent = "Saving draft…";
@@ -809,7 +1074,7 @@ function renderAchievements() {
   const completedDays = activeDates().length;
 
   const achievements = [
-    { title: "First steps", description: "Complete your first habit", earned: activeDates().some(key => habitCountForDay(state.days[key]) > 0) },
+    { title: "First steps", description: "Complete your first habit", earned: activeDates().some(key => habitCountForDay(state.days[key], key) > 0) },
     { title: "Training mindset", description: "Log your first football session", earned: sessions.length > 0 },
     { title: "One hour of effort", description: "Accumulate 60 football minutes", earned: totalMinutes >= 60 },
     { title: "Consistency builder", description: "Record activity on 7 different days", earned: completedDays >= 7 },
@@ -851,12 +1116,12 @@ function drawBarChart(canvas, values, labels) {
   values.forEach((value, index) => {
     const x = gap + index * (barWidth + gap);
     const barHeight = (value / max) * (height - 48);
-    context.fillStyle = "#71852d";
+    context.fillStyle = "#197a59";
     context.beginPath();
     context.roundRect(x, baseline - barHeight, barWidth, Math.max(3, barHeight), 5);
     context.fill();
 
-    context.fillStyle = "#65746a";
+    context.fillStyle = "#62766c";
     context.font = "11px sans-serif";
     context.textAlign = "center";
     context.fillText(labels[index] || "", x + barWidth / 2, height - 4);
@@ -889,7 +1154,7 @@ function drawProgressChart() {
   }
 
   const completions = keys.map(key =>
-    Math.round(habitCountForDay(state.days[key] || {}) / HABITS.length * 100)
+    Math.round(habitCountForDay(state.days[key] || {}, key) / activeHabits(key).length * 100)
   );
   const deposits = keys.map(key => {
     const entries = Array.isArray(state.savings) ? state.savings : [];
@@ -904,7 +1169,7 @@ function drawProgressChart() {
   const x = index => padding.left + (plotWidth * index) / 6;
   const y = value => padding.top + plotHeight * (1 - value / 100);
 
-  context.strokeStyle = "rgba(29,41,34,0.14)";
+  context.strokeStyle = "rgba(23,43,36,0.14)";
   context.lineWidth = 1;
 
   [0, 25, 50, 75, 100].forEach(value => {
@@ -936,10 +1201,10 @@ function drawProgressChart() {
     });
   }
 
-  drawLine(completions, "#71852d", 100);
+  drawLine(completions, "#197a59", 100);
 
   const maxDeposit = Math.max(SAVINGS_TARGET / 10, ...deposits);
-  drawLine(deposits, "#d85d42", maxDeposit);
+  drawLine(deposits, "#e56e50", maxDeposit);
 
   const labels = $("progressLabels");
   if (labels) {
@@ -963,13 +1228,158 @@ window.addEventListener("resize", () => {
    BACKUP AND RESTORE
 ========================================================= */
 
+function countProtectedRecords() {
+  let count = state.footballSchedule.length + state.savings.length +
+    state.learningGoals.length + state.videoIdeas.length;
+
+  Object.values(state.days).forEach(day => {
+    count++;
+    count += Object.keys(day.habits || {}).length;
+    count += Array.isArray(day.footballSessions) ? day.footballSessions.length : 0;
+    count += day.workout?.saved ? 1 : 0;
+    count += day.journal ? 1 : 0;
+  });
+  return count;
+}
+
+function formatTimestamp(value) {
+  if (!value) return "Not yet";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : date.toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" });
+}
+
+async function renderDataProtection() {
+  const history = $("backupHistory");
+  if (!history) return;
+
+  if ($("totalRecords")) $("totalRecords").textContent = countProtectedRecords().toLocaleString("en-KE");
+  if ($("storageStatus")) $("storageStatus").textContent = "Supabase cloud · account protected";
+  if ($("backupStatus")) {
+    $("backupStatus").textContent = saveError
+      ? "The latest cloud save needs attention. Your previous cloud records were kept."
+      : "Cloud data is protected by account-scoped Row Level Security. Recovery snapshots stay on this device and are separated by account.";
+  }
+  if (!dataDatabase) {
+    if ($("backupHealth")) $("backupHealth").textContent = "Unavailable";
+    if ($("storageUsage")) $("storageUsage").textContent = "Private device snapshots unavailable";
+    history.innerHTML = '<p class="empty-state">Cloud saving is active. Device recovery snapshots require IndexedDB.</p>';
+    return;
+  }
+
+  try {
+    const [stats, backups] = await Promise.all([
+      JayArcDataStore.getStats(dataDatabase, state),
+      JayArcDataStore.listBackups(dataDatabase)
+    ]);
+    if ($("backupHealth")) $("backupHealth").textContent = saveError
+      ? "Needs attention" : backups.length ? "Protected" : "No snapshot";
+    if ($("lastBackup")) $("lastBackup").textContent = formatTimestamp(stats.lastBackupAt);
+    if ($("backupCount")) $("backupCount").textContent = `${stats.backupCount} of ${stats.maxBackups} snapshots`;
+    if ($("storageUsage")) {
+      const bytes = stats.storageBytes ?? stats.payloadBytes;
+      $("storageUsage").textContent = `${(bytes / (1024 * 1024)).toFixed(2)} MB used${stats.storageQuotaBytes ? ` of ${(stats.storageQuotaBytes / (1024 * 1024)).toFixed(0)} MB` : ""}`;
+    }
+    history.innerHTML = backups.length
+      ? backups.map(backup => `
+          <article class="history-item backup-history-item">
+            <div>
+              <strong>${escapeHTML(backup.reason.replaceAll("-", " "))}</strong>
+              <small>${escapeHTML(formatTimestamp(backup.createdAt))} · schema ${number(backup.schemaVersion)}</small>
+            </div>
+            <button class="text-button" type="button" data-restore-snapshot="${escapeHTML(backup.id)}">Review &amp; restore</button>
+          </article>`).join("")
+      : '<p class="empty-state">Your first recovery snapshot will appear here.</p>';
+
+    history.querySelectorAll("[data-restore-snapshot]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const selected = backups.find(item => item.id === button.dataset.restoreSnapshot);
+        if (!selected || selected.checksum !== JayArcDataStore.checksum(selected.payload)) {
+          showStatus("That recovery snapshot failed its integrity check. Current data was not changed.", true);
+          return;
+        }
+        await restoreData(selected.payload, `snapshot from ${formatTimestamp(selected.createdAt)}`);
+      });
+    });
+  } catch (error) {
+    console.error("Could not read account backup status:", error);
+    if ($("backupHealth")) $("backupHealth").textContent = "Needs attention";
+    if ($("storageUsage")) $("storageUsage").textContent = "Recovery status could not be read";
+    history.innerHTML = '<p class="empty-state">Private recovery history could not be read. Export the current data before continuing.</p>';
+  }
+}
+
+async function restoreData(candidate, description) {
+  const days = Object.values(candidate.days || {});
+  const summary = [
+    `${Object.keys(candidate.days || {}).length} daily records`,
+    `${days.reduce((sum, day) => sum + (Array.isArray(day.footballSessions) ? day.footballSessions.length : 0), 0)} football records`,
+    `${Array.isArray(candidate.footballSchedule) ? candidate.footballSchedule.length : 0} scheduled sessions`,
+    `${Array.isArray(candidate.savings) ? candidate.savings.length : 0} savings records`,
+    `${Array.isArray(candidate.learningGoals) ? candidate.learningGoals.length : 0} learning goals`,
+    `${Array.isArray(candidate.videoIdeas) ? candidate.videoIdeas.length : 0} YouTube ideas`,
+    `${days.filter(day => Boolean(day.journal)).length} journal entries`
+  ].join("\n");
+  const recordCount = countRecordsIn(candidate);
+  const confirmed = confirm(
+    `Restore ${description}?\n\nData in this backup:\n${summary}\nTotal: ${recordCount} records.\n\nThis will replace current JAY ARC data. A backup of the current data will be created first.`
+  );
+  if (!confirmed) return;
+
+  const previousState = state;
+  const nextState = normalizeState(candidate);
+  try {
+    if (dataDatabase) {
+      await persistenceQueue;
+      await JayArcDataStore.createSnapshot(dataDatabase, structuredClone(state), "before-restore");
+    }
+    state = nextState;
+    if (!await saveState()) throw new Error("Cloud restore save failed.");
+    renderAll();
+    showStatus(dataDatabase
+      ? "Backup restored to your account. A private pre-restore snapshot was kept."
+      : "Backup restored to your account.");
+    await renderDataProtection();
+  } catch (error) {
+    state = previousState;
+    console.error("Backup restore failed:", error);
+    showStatus(`Backup was not restored: ${error.message}`, true);
+  }
+}
+
+function countRecordsIn(data) {
+  const days = data.days && typeof data.days === "object" ? Object.values(data.days) : [];
+  let count = (Array.isArray(data.footballSchedule) ? data.footballSchedule.length : 0) +
+    (Array.isArray(data.savings) ? data.savings.length : 1) +
+    (Array.isArray(data.learningGoals) ? data.learningGoals.length : 0) +
+    (Array.isArray(data.videoIdeas) ? data.videoIdeas.length : 0);
+  days.forEach(day => {
+    count++;
+    count += Object.keys(day.habits || {}).length;
+    count += Array.isArray(day.footballSessions) ? day.footballSessions.length : 0;
+    count += day.workout?.saved ? 1 : 0;
+    count += day.journal ? 1 : 0;
+  });
+  return count;
+}
+
 function exportBackup() {
   try {
-    // Include the complete state, including fields this version doesn't use.
     const backup = {
       app: "JAY ARC",
       backupVersion: BACKUP_VERSION,
+      schemaVersion: JayArcDataStore.constants.SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
+      sync: {
+        provider: "supabase",
+        status: "account-cloud",
+        note: "This file is a downloadable copy of this account's data."
+      },
+      integrity: {
+        algorithm: "FNV-1a checksum",
+        checksum: JayArcDataStore.checksum(state)
+      },
       data: state
     };
 
@@ -985,7 +1395,7 @@ function exportBackup() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 
     showStatus("Backup exported. Keep the file somewhere safe.");
   } catch (error) {
@@ -995,50 +1405,24 @@ function exportBackup() {
 }
 
 function validateBackup(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("The file does not contain a valid backup.");
-  }
-
-  const candidate = parsed.data && typeof parsed.data === "object"
-    ? parsed.data
-    : parsed;
-
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    throw new Error("The backup data is invalid.");
-  }
-
-  if (!candidate.days || typeof candidate.days !== "object" || Array.isArray(candidate.days)) {
-    throw new Error("The backup is missing its daily records.");
-  }
-
-  if (candidate.savings !== undefined &&
-      !Array.isArray(candidate.savings) &&
-      typeof candidate.savings !== "number") {
-    throw new Error("The savings records are invalid.");
-  }
-
-  if (candidate.learningGoals !== undefined &&
-      !Array.isArray(candidate.learningGoals)) {
-    throw new Error("The learning goals are invalid.");
-  }
-
-  if (candidate.videoIdeas !== undefined &&
-      !Array.isArray(candidate.videoIdeas)) {
-    throw new Error("The video ideas are invalid.");
-  }
-
-  return {
-    ...structuredClone(DEFAULT_STATE),
-    ...candidate,
-    days: candidate.days,
-    savings: Array.isArray(candidate.savings) ? candidate.savings : [],
-    learningGoals: Array.isArray(candidate.learningGoals) ? candidate.learningGoals : [],
-    videoIdeas: Array.isArray(candidate.videoIdeas) ? candidate.videoIdeas : []
-  };
+  return normalizeState(JayArcDataStore.verifyBackup(parsed));
 }
 
 function initBackup() {
   $("exportBackup")?.addEventListener("click", exportBackup);
+
+  $("createBackup")?.addEventListener("click", async () => {
+    try {
+      if (!dataDatabase) throw new Error("Private device snapshots are unavailable in this browser.");
+      if (!await saveState()) return;
+      await JayArcDataStore.createSnapshot(dataDatabase, structuredClone(state), "manual-backup");
+      showStatus("Private account snapshot created and cloud data saved.");
+      await renderDataProtection();
+    } catch (error) {
+      console.error("Manual backup failed:", error);
+      showStatus(`Backup failed: ${error.message}`, true);
+    }
+  });
 
   $("restoreBackup")?.addEventListener("click", async () => {
     const input = $("importBackup");
@@ -1064,22 +1448,9 @@ function initBackup() {
       return;
     }
 
-    if (!confirm("Restore this backup? Your current JAY ARC records will be replaced. Export a backup of the current records first if you need them.")) {
-      return;
-    }
-
-    const previousState = state;
-    state = candidate;
-
-    if (!saveState()) {
-      state = previousState;
-      showStatus("Restore failed because the browser could not save the imported data.", true);
-      return;
-    }
-
-    renderAll();
+    const summary = `${countRecordsIn(candidate)} records across ${Object.keys(candidate.days).length} days`;
+    await restoreData(candidate, `imported backup (${summary})`);
     input.value = "";
-    showStatus("Backup restored successfully.");
   });
 }
 
@@ -1088,33 +1459,42 @@ function initBackup() {
 ========================================================= */
 
 function initResetControls() {
-  $("resetDay")?.addEventListener("click", () => {
+  $("resetDay")?.addEventListener("click", async () => {
     // This action does not erase existing records.
     getDay();
-    saveState();
+    if (!await saveState()) return;
     renderAll();
     showStatus("Today's record is ready. Your saved history is unchanged.");
   });
 
   $("clearAll")?.addEventListener("click", () => {
     const confirmed = confirm(
-      "This permanently clears JAY ARC data from this browser. Export a backup first. Continue?"
+      dataDatabase
+        ? "Clear this account's JAY ARC records? A private recovery snapshot will be kept first. Continue?"
+        : "Clear this account's JAY ARC records? Device recovery snapshots are unavailable, so export a JSON backup first if you need one. Continue?"
     );
 
     if (!confirmed) return;
 
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-      state = structuredClone(DEFAULT_STATE);
-      getDay();
-      if (!saveState()) return;
-
-      renderAll();
-      showStatus("Local JAY ARC data cleared.");
-    } catch (error) {
-      console.error(error);
-      showStatus("Could not clear the saved data.", true);
-    }
+    (async () => {
+      const previousState = state;
+      const nextState = normalizeState(structuredClone(DEFAULT_STATE));
+      try {
+        if (dataDatabase) {
+          await persistenceQueue;
+          await JayArcDataStore.createSnapshot(dataDatabase, structuredClone(state), "before-clear");
+        }
+        state = nextState;
+        getDay();
+        await persistLatestState();
+        renderAll();
+        showStatus("Your account workspace was cleared. A private pre-clear snapshot was kept.");
+      } catch (error) {
+        state = previousState;
+        console.error("Could not start a fresh workspace:", error);
+        showStatus(`Workspace was not cleared: ${error.message}`, true);
+      }
+    })();
   });
 
   window.addEventListener("beforeinstallprompt", event => {
@@ -1133,9 +1513,23 @@ function initResetControls() {
   });
 }
 
-/* =========================================================
-   RENDER AND STARTUP
-========================================================= */
+async function persistLatestState() {
+  const snapshot = structuredClone(state);
+  await JayArcAuth.saveData(snapshot);
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) ||
+      (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1")) {
+    return;
+  }
+  navigator.serviceWorker.register("./sw.js").then(() => {
+    if ($("storageStatus")) $("storageStatus").textContent += " · offline shell ready";
+  }).catch(error => {
+    console.error("JAY ARC offline cache registration failed:", error);
+    showStatus("Offline app caching could not be enabled. Online saving remains available.", true);
+  });
+}
 
 function renderAll() {
   initDate();
@@ -1149,9 +1543,36 @@ function renderAll() {
   renderJournal();
   renderAchievements();
   renderCharts();
+  void renderDataProtection();
 }
 
-function init() {
+window.JayArcPersistence = {
+  async flush() {
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      return saveState();
+    }
+    if (saveError) return saveState();
+    await persistenceQueue;
+    return !saveError;
+  }
+};
+
+async function init() {
+  const account = await JayArcAuth.ready;
+  if (!account) return;
+
+  state = normalizeState(account.data || DEFAULT_STATE);
+  persistenceMode = "cloud";
+  try {
+    dataDatabase = await JayArcDataStore.initializeAccountBackups(account.user.id);
+  } catch (error) {
+    console.error("Private account backup storage could not be opened:", error);
+    showStatus("Cloud saving is available, but this browser cannot create private recovery snapshots.", true);
+  }
+
+  updateSyncStatus("Cloud ready");
   getDay();
   initNavigation();
   initFootball();
@@ -1162,15 +1583,16 @@ function init() {
   initJournal();
   initBackup();
   initResetControls();
-
   renderAll();
-
-  // Save newly initialized data without deleting legacy fields.
-  saveState();
+  if (!account.updatedAt && !await saveState()) return;
+  renderDataProtection();
+  registerServiceWorker();
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init, { once: true });
+if (!window.JayArcAuth) {
+  location.replace(new URL("./index.html", location.href).href);
+} else if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => { void init(); }, { once: true });
 } else {
-  init();
+  void init();
 }
