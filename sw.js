@@ -1,4 +1,4 @@
-const CACHE = "jay-arc-v9";
+const CACHE = "jay-arc-v10";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,7 +10,10 @@ const ASSETS = [
   "./manifest.json",
   "./icon.svg",
   "./icon-192.svg",
-  "./icon-512.svg"
+  "./icon-512.svg",
+  "./jay-arc-logo.png",
+  "./jay-arc-logo-192.png",
+  "./jay-arc-logo-512.png"
 ];
 
 self.addEventListener("install", event => {

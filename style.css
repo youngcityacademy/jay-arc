@@ -130,10 +130,23 @@ svg {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   white-space: nowrap;
   font: 800 21px/1 var(--display);
   letter-spacing: -.04em;
+}
+
+.brand-mark {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.auth-brand .brand-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: 11px;
 }
 
 .brand span {
